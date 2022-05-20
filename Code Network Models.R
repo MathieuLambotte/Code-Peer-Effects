@@ -63,7 +63,7 @@ SIML_LLL<-function(data=data,Y_var="yname",X_var=c("X1","X2"),adjacency_matrix=G
 #starting_values is a vector of ncol(data)+k+1 ([X,FE,GX,GY,Intercept]) starting values for the estimated coefficients 
 #rep_group is the selected group among the m network for the marginal effects estimation 
   #discrete_variables should be a vector of columns names which are discrete variables, coded as 0-1 dummies
-  Y<-matrix(data[,Y_var]) #binary outcome variable 0 or 1
+Y<-matrix(data[,Y_var]) #binary outcome variable 0 or 1
 X<-as.matrix(sapply(data[,!colnames(data)%in%c(Y_var,network_var)], as.numeric))  #X contains the X and the fixed effects' dummies (here 10 labs, so 9 dummies)
 k=ncol(X[,X_var]) # number of Xs
 d<-ncol(data)-k-2 #number of dummy (fidex effects per school or labs) columns, zero if model without fixed effects
@@ -197,7 +197,7 @@ result=cbind(bnew$par, se, 2*(1-pnorm(abs(bnew$par/se))))
 # To study the marginal effect, consider an individual in a specific group. So first, find a group as much representative as possible 
 bnew1=bnew
 gg<-labs[[rep_group]]
-
+n<-lengths(labs)
 X_f = X[gg,]
 Mg_f<-Mg[gg,]
 mr=nrow(X_f)
@@ -222,7 +222,7 @@ naivemarg=2*(F*(1-F))%*%t(bnew$par)
 naivemargm=rowMeans(t(naivemarg[1:n[[rep_group]],]))*100  #en %
 
 
-ini_n=matrix(0,n,k)
+ini_n=matrix(0,n[[rep_group]],k)
 
 X_fa=X_f
 for(member in 1:n[[rep_group]]){
@@ -266,6 +266,423 @@ return(out)
 }
 test<-SIML_LLL(data=data,Y_var=Y_var,X_var=X_var,adjacency_matrix=G,network_var="Lab",starting_values=starting_values,rep_group=6,discrete_variables=discrete_variables)
 
+
+
+#### Simulated Iterative Maximum Likelihood without dummies ####
+SIML_LLL2<-function(data=data,Y_var="yname",X_var=c("X1","X2"),adjacency_matrix=G,network_var="Lab",starting_values=matrix(0,nrow=(ncol(data)+length(X_var)+1),ncol=1),rep_group=6,discrete_variables=c("X2")){ #data should be [Y, X, Fixed Effects], G sould be a nxn matrix, 
+  #network_split should be a list of m vector, where m is the number of different networks, and in each list the vector is the row corresponding in the adjacency matrix
+  #starting_values is a vector of ncol(data)+k+1 ([X,FE,GX,GY,Intercept]) starting values for the estimated coefficients 
+  #rep_group is the selected group among the m network for the marginal effects estimation 
+  #discrete_variables should be a vector of columns names which are discrete variables, coded as 0-1 dummies
+  Y<-matrix(data[,Y_var]) #binary outcome variable 0 or 1
+  X<-as.matrix(sapply(data[,!colnames(data)%in%c(Y_var,network_var)], as.numeric))  #X contains the X and the fixed effects' dummies (here 10 labs, so 9 dummies)
+  k=ncol(X[,X_var]) # number of Xs
+  X<-X[,X_var]
+  Mg=Y #create a vector of same size at Y, will be the heterogeneous expectations
+  G<-adjacency_matrix #adjacency matrix (not a list of subnetworks here)
+  b1<-starting_values #starting values for the parameters, here extracted from a linear in means model, b1 =[X,FE,GX,GY,Intercept] or following the paper eta=[alpha,fixed effects,theta,gamma,intercept]
+  b1<-c(b1[c(1:k)],b1[c(1:k)],b1[length(b1)-1],b1[length(b1)])
+  names(b1)<-c(names(b1)[c(1:k)],paste0("G_",names(b1)[c(1:k)]),names(b1[length(b1)-1]),names(b1[length(b1)]))
+  labs<-split(as.numeric(rownames(data)), data[,network_var])
+  Y=2*Y-1 #, transformed into -1 1 following the paper
+  SSE_b=matrix(0,1000,1) #gathers the SSEs over the iterations
+  #functions
+  mr_no_randomC2<-function(b){
+    yy=0
+    gra=matrix(0,nrow=1,ncol=(k*2+2))
+    
+    for(i in 1:length(labs)){
+      Xt<-X[labs[[i]],]
+      Yt<-Y[labs[[i]]]
+      wt<-G[labs[[i]],labs[[i]]]
+      Mgt<-Mg[labs[[i]]]
+      
+      mr<-length(labs[[i]])
+      indp_b1=matrix(0,nrow=mr,1)
+      indp_b2=matrix(0,nrow=mr,1)
+      gra_g=matrix(0,nrow=mr,ncol=(k*2+2))
+      bb=Xt%*%matrix(b[1:k])+wt%*%Xt%*%b[(k+1):(2*k)]+Mgt*b[2*k+1]+b[2*k+2]*matrix(1,nrow=mr,ncol=1)
+      
+      indp_b1=indp_b1+ (1/(1+exp(-2*bb)))
+      indp_b2=indp_b2+ (1/(1+exp(2*bb)))
+      
+      
+      yy=yy+ ((t(matrix(1,nrow=mr,ncol=1)+Yt)/2)%*%log(indp_b1)+(t(matrix(1,nrow=mr,ncol=1)-Yt)/2)%*%log(indp_b2))
+      
+      
+      temp4=cbind(Xt,wt%*%Xt[,c(1:k)],Mgt, matrix(1,nrow=mr,ncol=1))
+      
+      gra_g=gra_g+temp4
+      
+      
+      gra1=t(2*(((matrix(1,nrow=mr,ncol=1)+Yt)/2)-indp_b1))%*%gra_g
+      gra=gra+gra1
+    }  
+    gr = t(-gra)
+    ff=-yy
+    return(ff)
+  } #function to opimize
+  
+  flag=1
+  count=1
+  while(flag==1){
+    for(i in 1:length(labs)){
+      Xt<-X[labs[[i]],]
+      Yt<-Y[labs[[i]]]
+      wt<-G[labs[[i]],labs[[i]]]
+      mr<-length(labs[[i]])
+      euclid=1
+      x0=matrix(1,mr,1)/2
+      endog=matrix(0,mr,1)
+      
+      while (euclid>0.00001){
+        xx_new=tanh(Xt%*%matrix(b1[1:k])+wt%*%Xt%*%b1[(k+1):(2*k)]+wt%*%x0%*%b1[2*k+1]+b1[2*k+2]*matrix(1,nrow=mr,ncol=1))
+        euclid=max(sum((xx_new-x0)*(xx_new-x0)))
+        x0=xx_new
+      }
+      
+      endog=xx_new;
+      Mgt=wt%*%endog
+      Mg[labs[[i]]]<-Mgt
+    }
+    
+    bnew<-optim(b1,mr_no_randomC2,method="BFGS")
+    SSE=t(bnew$par-b1)%*%(bnew$par-b1)
+    if (is.na(SSE)){
+      flag=0
+    }  else if (SSE<0.0001){
+      flag=0
+    }  else if (count>1000){
+      flag=0
+    } else {flag=1}
+    
+    if (flag==1){
+      SSE_b[count]=SSE
+      b1=(bnew$par-b1)/(ceiling (count/2))+b1
+      count=count+1
+    }
+  }
+  #S.E
+  graf=matrix(0,(2*k+2),(2*k+2)) 
+  
+  for(i in 1:length(labs)){
+    Xt<-X[labs[[i]],]
+    Yt<-Y[labs[[i]]]
+    wt<-G[labs[[i]],labs[[i]]]
+    mr<-length(labs[[i]])
+    Mgt<-Mg[labs[[i]]]
+    
+    
+    indp_b1f=matrix(0,nrow=mr,1)
+    indp_b2f=matrix(0,nrow=mr,1)
+    
+    gra_gf=matrix(0,nrow=mr,ncol=(k*2+2))
+    
+    bbf=Xt%*%matrix(bnew$par[1:k])+wt%*%Xt%*%bnew$par[(k+1):(2*k)]+Mgt*bnew$par[2*k+1]+bnew$par[2*k+2]*matrix(1,nrow=mr,ncol=1)
+    indp_b1f=indp_b1f+(1/(1+exp(-2*bbf)))
+    temp3=indp_b1f
+    
+    indp_b2f=indp_b2f+(1/(1+exp(2*bbf)))
+    
+    deri=4/(exp(2*bbf)+exp(-2*bbf)+2)
+    temp1=diag(deri[,1],mr,mr)
+    temp2=solve(diag(nrow(Xt))-bnew$par[2*k+1]*temp1%*%wt)%*%temp1%*%cbind(Xt,wt%*%Xt,Mgt, matrix(1,nrow=mr,ncol=1)) #remember to include the constant term.
+    
+    temp4=cbind(Xt,wt%*%Xt,Mgt, matrix(1,nrow=mr,ncol=1))+bnew$par[2*k+1]*wt%*%temp2  # remember to include the constant term.
+    
+    gra_gf=gra_gf+temp4
+    
+    graf1=2*diag((matrix(1,nrow=mr,ncol=1)+Yt)/(2-temp3))*gra_gf
+    
+    graf=graf+t(graf1)%*%graf1 
+  }
+  
+  msscore = graf/nrow(X)  
+  se=sqrt(round(diag(pinv(msscore)/nrow(X)),10))
+  result=cbind(bnew$par, se, 2*(1-pnorm(abs(bnew$par/se))))
+  
+  
+  # Marginal effects 
+  # To study the marginal effect, consider an individual in a specific group. So first, find a group as much representative as possible 
+  bnew1=bnew
+  gg<-labs[[rep_group]]
+  n<-lengths(labs)
+  X_f = X[gg,]
+  Mg_f<-Mg[gg,]
+  mr=nrow(X_f)
+  
+  W_f= G[gg,gg]
+  
+  
+  indp_b1f=matrix(0,mr,1)
+  indp_b2f=matrix(0,mr,1)
+  deri_f=matrix(0,mr,1)
+  
+  
+  bbf=X_f%*%matrix(bnew$par[1:k])+W_f%*%X_f[,c(1:k)]%*%bnew$par[(k+1):(2*k)]+Mg_f*bnew$par[2*k+1]+bnew$par[2*k+2]*matrix(1,nrow=mr,ncol=1)
+  
+  
+  indp_b1f=(1/(1+exp(-2*bbf)))
+  temp3=indp_b1f
+  F<-temp3
+  
+  
+  naivemarg=2*(F*(1-F))%*%t(bnew$par)
+  naivemargm=rowMeans(t(naivemarg[1:n[[rep_group]],]))*100  #en %
+  
+  
+  ini_n=matrix(0,n[[rep_group]],k)
+  
+  X_fa=X_f
+  for(member in 1:n[[rep_group]]){
+    # Marginal effect for the discrete variables, kk are the columns of X which are discrete
+    for( kk in which(colnames(X)%in%discrete_variables)){ 
+      Mg1=Mg_f
+      X_fa[member,kk]=0
+      indp_b1f=matrix(0,mr,1)
+      indp_b2f=matrix(0,mr,1)
+      deri_f=matrix(0,mr,1)
+      bbf=X_fa%*%matrix(bnew$par[1:(k)])+W_f%*%X_fa[,c(1:k)]%*%bnew$par[(k+1):(2*k)]+Mg1*bnew$par[2*k+1]+bnew$par[2*k+2]*matrix(1,nrow=mr,ncol=1)
+      indp_b1f=(1/(1+exp(-2*bbf)))
+      temp3=indp_b1f
+      F_before=temp3
+      X_fa[member,kk]=1
+      Mg1=Mg_f
+      indp_b1f=matrix(0,mr,1)
+      indp_b2f=matrix(0,mr,1)
+      deri_f=matrix(0,mr,1)
+      bbf=X_fa%*%matrix(bnew$par[1:(k)])+W_f%*%X_fa[,c(1:k)]%*%bnew$par[(k+1):(2*k)]+Mg1*bnew$par[2*k+1]+bnew$par[2*k+2]*matrix(1,nrow=mr,ncol=1)
+      indp_b1f=(1/(1+exp(-2*bbf)))
+      temp3=indp_b1f
+      F_after=temp3
+      amarg=F_after-F_before;
+      ini_n[member,kk]=amarg[member]
+      X_fa=X_f
+    } 
+  }  
+  
+  ini_n2=ini_n[,c(3,8,9,10,11,13)]
+  ma1_n=rowMeans(t(ini_n2))*100
+  naivemargm2=naivemargm
+  naivemargm2[c(3,8,9,10,11,13)]=ma1_n
+  naivemargm3<-naivemargm2/100*2 #As Y goes from -1 to 1, need to x2 to get the marginal effect of having all peers doing the outcome instead of having zero peers doing it
+  
+  export<-cbind(result,naivemargm3)
+  colnames(export)<-c("Estimate","SE","p.value","Marginal Effect")
+  out<-list(export,2*bnew$value,bnew$counts,bnew$convergence)
+  names(out)<-c("summary","LogLikelihood","Iterations","Convergence")
+  return(out)
+}
+test<-SIML_LLL2(data=data,Y_var=Y_var,X_var=X_var,adjacency_matrix=G,network_var="Lab",starting_values=starting_values,rep_group=6,discrete_variables=discrete_variables)
+
+
+#### Simulated Iterative Maximum Likelihood endogenous effect only ####
+SIML_LLL3<-function(data=data,Y_var="yname",X_var=c("X1","X2"),adjacency_matrix=G,network_var="Lab",starting_values=matrix(0,nrow=(ncol(data)+length(X_var)+1),ncol=1),rep_group=6,discrete_variables=c("X2")){ #data should be [Y, X, Fixed Effects], G sould be a nxn matrix, 
+  #network_split should be a list of m vector, where m is the number of different networks, and in each list the vector is the row corresponding in the adjacency matrix
+  #starting_values is a vector of ncol(data)+k+1 ([X,FE,GX,GY,Intercept]) starting values for the estimated coefficients 
+  #rep_group is the selected group among the m network for the marginal effects estimation 
+  #discrete_variables should be a vector of columns names which are discrete variables, coded as 0-1 dummies
+  Y<-matrix(data[,Y_var]) #binary outcome variable 0 or 1
+  X<-as.matrix(sapply(data[,!colnames(data)%in%c(Y_var,network_var)], as.numeric))  #X contains the X and the fixed effects' dummies (here 10 labs, so 9 dummies)
+  k=ncol(X[,X_var]) # number of Xs
+  X<-X[,X_var]
+
+  G<-adjacency_matrix #adjacency matrix (not a list of subnetworks here)
+  b1<-starting_values #starting values for the parameters, here extracted from a linear in means model, b1 =[X,FE,GX,GY,Intercept] or following the paper eta=[alpha,fixed effects,theta,gamma,intercept]
+  b1<-c(b1[c(1:k)],b1[length(b1)-1],b1[length(b1)])
+  names(b1)<-c(names(b1)[c(1:k)],names(b1[length(b1)-1]),names(b1[length(b1)]))
+  labs<-split(as.numeric(rownames(data)), data[,network_var])
+    Mg=Y #create a vector of same size at Y, will be the heterogeneous expectations
+  Y=2*Y-1 #, transformed into -1 1 following the paper
+  SSE_b=matrix(0,1000,1) #gathers the SSEs over the iterations
+  #functions
+  mr_no_randomC2<-function(b){
+    yy=0
+    gra=matrix(0,nrow=1,ncol=(k+2))
+    
+    for(i in 1:length(labs)){
+      Xt<-X[labs[[i]],]
+      Yt<-Y[labs[[i]]]
+      wt<-G[labs[[i]],labs[[i]]]
+      Mgt<-Mg[labs[[i]]]
+      
+      mr<-length(labs[[i]])
+      indp_b1=matrix(0,nrow=mr,1)
+      indp_b2=matrix(0,nrow=mr,1)
+      gra_g=matrix(0,nrow=mr,ncol=(k+2))
+      bb=Xt%*%matrix(b[1:k])+Mgt*b[k+1]+b[k+2]*matrix(1,nrow=mr,ncol=1)
+      
+      indp_b1=indp_b1+ (1/(1+exp(-2*bb)))
+      indp_b2=indp_b2+ (1/(1+exp(2*bb)))
+      
+      
+      yy=yy+ ((t(matrix(1,nrow=mr,ncol=1)+Yt)/2)%*%log(indp_b1)+(t(matrix(1,nrow=mr,ncol=1)-Yt)/2)%*%log(indp_b2))
+      
+      
+      temp4=cbind(Xt,Mgt, matrix(1,nrow=mr,ncol=1))
+      
+      gra_g=gra_g+temp4
+      
+      
+      gra1=t(2*(((matrix(1,nrow=mr,ncol=1)+Yt)/2)-indp_b1))%*%gra_g
+      gra=gra+gra1
+    }  
+    gr = t(-gra)
+    ff=-yy
+    return(ff)
+  } #function to opimize
+  
+  flag=1
+  count=1
+  while(flag==1){
+    for(i in 1:length(labs)){
+      Xt<-X[labs[[i]],]
+      Yt<-Y[labs[[i]]]
+      wt<-G[labs[[i]],labs[[i]]]
+      mr<-length(labs[[i]])
+      euclid=1
+      x0=matrix(1,mr,1)/2
+      endog=matrix(0,mr,1)
+      
+      while (euclid>0.00001){
+        xx_new=tanh(Xt%*%matrix(b1[1:k])+wt%*%x0%*%b1[k+1]+b1[k+2]*matrix(1,nrow=mr,ncol=1))
+        euclid=max(sum((xx_new-x0)*(xx_new-x0)))
+        x0=xx_new
+      }
+      
+      endog=xx_new;
+      Mgt=wt%*%endog
+      Mg[labs[[i]]]<-Mgt
+    }
+    
+    bnew<-optim(b1,mr_no_randomC2,method="BFGS")
+    SSE=t(bnew$par-b1)%*%(bnew$par-b1)
+    if (is.na(SSE)){
+      flag=0
+    }  else if (SSE<0.0001){
+      flag=0
+    }  else if (count>1000){
+      flag=0
+    } else {flag=1}
+    
+    if (flag==1){
+      SSE_b[count]=SSE
+      b1=(bnew$par-b1)/(ceiling (count/2))+b1
+      count=count+1
+    }
+  }
+  #S.E
+  graf=matrix(0,(k+2),(k+2)) 
+  
+  for(i in 1:length(labs)){
+    Xt<-X[labs[[i]],]
+    Yt<-Y[labs[[i]]]
+    wt<-G[labs[[i]],labs[[i]]]
+    mr<-length(labs[[i]])
+    Mgt<-Mg[labs[[i]]]
+    
+    
+    indp_b1f=matrix(0,nrow=mr,1)
+    indp_b2f=matrix(0,nrow=mr,1)
+    
+    gra_gf=matrix(0,nrow=mr,ncol=(k+2))
+    
+    bbf=Xt%*%matrix(bnew$par[1:k])+Mgt*bnew$par[k+1]+bnew$par[k+2]*matrix(1,nrow=mr,ncol=1)
+    indp_b1f=indp_b1f+(1/(1+exp(-2*bbf)))
+    temp3=indp_b1f
+    
+    indp_b2f=indp_b2f+(1/(1+exp(2*bbf)))
+    
+    deri=4/(exp(2*bbf)+exp(-2*bbf)+2)
+    temp1=diag(deri[,1],mr,mr)
+    temp2=solve(diag(nrow(Xt))-bnew$par[k+1]*temp1%*%wt)%*%temp1%*%cbind(Xt,Mgt, matrix(1,nrow=mr,ncol=1)) #remember to include the constant term.
+    
+    temp4=cbind(Xt,Mgt, matrix(1,nrow=mr,ncol=1))+bnew$par[k+1]*wt%*%temp2  # remember to include the constant term.
+    
+    gra_gf=gra_gf+temp4
+    
+    graf1=2*diag((matrix(1,nrow=mr,ncol=1)+Yt)/(2-temp3))*gra_gf
+    
+    graf=graf+t(graf1)%*%graf1 
+  }
+  
+  msscore = graf/nrow(X)  
+  se=sqrt(round(diag(pinv(msscore)/nrow(X)),10))
+  result=cbind(bnew$par, se, 2*(1-pnorm(abs(bnew$par/se))))
+  
+  
+  # Marginal effects 
+  # To study the marginal effect, consider an individual in a specific group. So first, find a group as much representative as possible 
+  bnew1=bnew
+  gg<-labs[[rep_group]]
+  n<-lengths(labs)
+  X_f = X[gg,]
+  Mg_f<-Mg[gg,]
+  mr=nrow(X_f)
+  
+  W_f= G[gg,gg]
+  
+  
+  indp_b1f=matrix(0,mr,1)
+  indp_b2f=matrix(0,mr,1)
+  deri_f=matrix(0,mr,1)
+  
+  
+  bbf=X_f%*%matrix(bnew$par[1:k])+Mg_f*bnew$par[k+1]+bnew$par[k+2]*matrix(1,nrow=mr,ncol=1)
+  
+  
+  indp_b1f=(1/(1+exp(-2*bbf)))
+  temp3=indp_b1f
+  F<-temp3
+  
+  
+  naivemarg=2*(F*(1-F))%*%t(bnew$par)
+  naivemargm=rowMeans(t(naivemarg[1:n[[rep_group]],]))*100  #en %
+  
+  
+  ini_n=matrix(0,n[[rep_group]],k)
+  
+  X_fa=X_f
+  for(member in 1:n[[rep_group]]){
+    # Marginal effect for the discrete variables, kk are the columns of X which are discrete
+    for( kk in which(colnames(X)%in%discrete_variables)){ 
+      Mg1=Mg_f
+      X_fa[member,kk]=0
+      indp_b1f=matrix(0,mr,1)
+      indp_b2f=matrix(0,mr,1)
+      deri_f=matrix(0,mr,1)
+      bbf=X_fa%*%matrix(bnew$par[1:k])+Mg1*bnew$par[k+1]+bnew$par[k+2]*matrix(1,nrow=mr,ncol=1)
+      indp_b1f=(1/(1+exp(-2*bbf)))
+      temp3=indp_b1f
+      F_before=temp3
+      X_fa[member,kk]=1
+      Mg1=Mg_f
+      indp_b1f=matrix(0,mr,1)
+      indp_b2f=matrix(0,mr,1)
+      deri_f=matrix(0,mr,1)
+      bbf=X_fa%*%matrix(bnew$par[1:(k)])+Mg1*bnew$par[k+1]+bnew$par[k+2]*matrix(1,nrow=mr,ncol=1)
+      indp_b1f=(1/(1+exp(-2*bbf)))
+      temp3=indp_b1f
+      F_after=temp3
+      amarg=F_after-F_before;
+      ini_n[member,kk]=amarg[member]
+      X_fa=X_f
+    } 
+  }  
+  
+  ini_n2=ini_n[,c(3,8,9,10,11,13)]
+  ma1_n=rowMeans(t(ini_n2))*100
+  naivemargm2=naivemargm
+  naivemargm2[c(3,8,9,10,11,13)]=ma1_n
+  naivemargm3<-naivemargm2/100*2 #As Y goes from -1 to 1, need to x2 to get the marginal effect of having all peers doing the outcome instead of having zero peers doing it
+  
+  export<-cbind(result,naivemargm3)
+  colnames(export)<-c("Estimate","SE","p.value","Marginal Effect")
+  out<-list(export,2*bnew$value,bnew$counts,bnew$convergence)
+  names(out)<-c("summary","LogLikelihood","Iterations","Convergence")
+  return(out)
+}
+test<-SIML_LLL3(data=data,Y_var=Y_var,X_var=X_var,adjacency_matrix=G,network_var="Lab",starting_values=starting_values,rep_group=6,discrete_variables=discrete_variables)
 
 
 #### Non linear least squares from Boucher & Bramoullé 2020 ####
@@ -393,6 +810,7 @@ names(export)<-c("summary","Correct Predictions")
 return(export)
 }
 test<-NLS_BB(data=data,Y_var=Y_var,X_var=X_var,dummy=TRUE,exogenous_effect=TRUE,adjacency_matrix=G,network_var="Lab",staring_value=0.5)
+
 
 
 #### 2SLS from Boucher & Bramoullé 2020 - Main function so more options ####
