@@ -3,4 +3,5 @@ R Codes to estimate Peer Effects with different models, building on Lee, Li and 
 
 This a work in progress, intended for my own research but someone might find it useful.
 
-For now, SIML_LLL only accepts models with exogenous peer effects and fixed effects, while NLS_BB and IV_BB accept models with or without fixed effects and exogenous peer effects. In addition, IV_BB is more complete at the estimator allows for demeaning when using fixed effects (as in a panel data with fixed effects) and clustered-robust standard errors. You can also extract the model matrix using get.df=TRUE in IV_BB.
+For now, SIML_LLL only accepts models with exogenous peer effects and fixed effects, while NLS_BB and IV_BB accept models with or without fixed effects and exogenous peer effects. So I created seperate but similar functions for SIML witout fixed effects (SIML_LLL2) and SIML without exogenous peer effects and fixed effects (SIML_LLL3).
+In addition, IV_BB is more complete at the estimator allows for demeaning when using fixed effects (as in a panel data with fixed effects) and clustered-robust standard errors. You can also extract the model matrix using get.df=TRUE in IV_BB.
